@@ -182,31 +182,60 @@ impl PromptSection for ButtonsSection {
     fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
         Ok(r#"## Interactive Buttons (Telegram)
 
-You can send interactive inline keyboard buttons with your Telegram responses:
+You can send interactive inline keyboard buttons using Telegram's official Bot API format:
 
-[BUTTONS]
-Button Text -> callback_data
-Another Button -> another_callback
----
-Second Row Button -> second_row
-[/BUTTONS]
+[INLINE_KEYBOARD]
+[
+  [{"text": "Button 1", "callback_data": "action1"}],
+  [{"text": "Button 2", "callback_data": "action2"}]
+]
+[/INLINE_KEYBOARD]
+
+This is the standard Telegram Bot API format (https://core.telegram.org/bots/api#inlinekeyboardbutton).
+
+Supported button types:
+- callback_data: User clicks button, you receive callback data
+- url: Opens a URL when clicked
+- web_app: Opens a Web App
+
+Examples:
+
+1. Callback buttons (receive data when clicked):
+[INLINE_KEYBOARD]
+[
+  [{"text": "✅ Approve", "callback_data": "approve_action"}],
+  [{"text": "❌ Reject", "callback_data": "reject_action"}]
+]
+[/INLINE_KEYBOARD]
+
+2. Multiple buttons per row:
+[INLINE_KEYBOARD]
+[
+  [{"text": "Yes", "callback_data": "yes"}, {"text": "No", "callback_data": "no"}],
+  [{"text": "Cancel", "callback_data": "cancel"}]
+]
+[/INLINE_KEYBOARD]
+
+3. URL buttons:
+[INLINE_KEYBOARD]
+[
+  [{"text": "Visit Website", "url": "https://example.com"}],
+  [{"text": "More Info", "callback_data": "info"}]
+]
+[/INLINE_KEYBOARD]
 
 Rules:
-- Place [BUTTONS]...[/BUTTONS] anywhere in your message
-- Each line: "Display Text -> callback_data" or "Display Text | callback_data"
-- Use "---" or "ROW" to start a new row
-- Max 3 buttons per row (auto-wrapped)
-- Callback data limited to 64 characters
+- Place [INLINE_KEYBOARD]...[/INLINE_KEYBOARD] anywhere in your message
+- JSON structure: array of rows, each row is array of button objects
+- callback_data limited to 64 characters (automatically truncated)
+- Invalid JSON falls back to showing text as-is
 - Buttons appear only in Telegram channel
 
-Example:
-What would you like to do?
-
+Legacy format (deprecated but still supported):
 [BUTTONS]
-✅ Approve -> approve_action
-❌ Reject -> reject_action
+Button Text -> callback_data
 ---
-ℹ️ More Info -> show_info
+Second Row -> second_row
 [/BUTTONS]
 
 When a user clicks a button, you'll receive: "🔘 Button clicked: {callback_data}""#

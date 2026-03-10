@@ -61,7 +61,38 @@ struct CallbackQuery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InlineKeyboardButton {
     text: String,
-    callback_data: String,
+    callback_data: Option<String>,
+    url: Option<String>,
+    web_app: Option<serde_json::Value>,
+}
+
+impl InlineKeyboardButton {
+    fn new_callback(text: String, callback_data: String) -> Self {
+        Self {
+            text,
+            callback_data: Some(callback_data),
+            url: None,
+            web_app: None,
+        }
+    }
+
+    fn new_url(text: String, url: String) -> Self {
+        Self {
+            text,
+            callback_data: None,
+            url: Some(url),
+            web_app: None,
+        }
+    }
+
+    fn new_web_app(text: String, web_app: serde_json::Value) -> Self {
+        Self {
+            text,
+            callback_data: None,
+            url: None,
+            web_app: Some(web_app),
+        }
+    }
 }
 
 /// Represents an inline keyboard (rows of buttons)
@@ -86,10 +117,22 @@ impl InlineKeyboard {
             .map(|row| {
                 row.iter()
                     .map(|btn| {
-                        serde_json::json!({
-                            "text": btn.text,
-                            "callback_data": btn.callback_data
-                        })
+                        let mut button_json = serde_json::json!({
+                            "text": btn.text
+                        });
+
+                        if let Some(ref callback_data) = btn.callback_data {
+                            button_json["callback_data"] =
+                                serde_json::Value::String(callback_data.clone());
+                        }
+                        if let Some(ref url) = btn.url {
+                            button_json["url"] = serde_json::Value::String(url.clone());
+                        }
+                        if let Some(ref web_app) = btn.web_app {
+                            button_json["web_app"] = web_app.clone();
+                        }
+
+                        button_json
                     })
                     .collect()
             })
@@ -506,9 +549,90 @@ fn parse_attachment_markers(message: &str) -> (String, Vec<TelegramAttachment>) 
     (cleaned.trim().to_string(), attachments)
 }
 
-/// Parse inline buttons from message text using [BUTTONS]...[/BUTTONS] syntax
+/// Parse inline buttons from message text using [INLINE_KEYBOARD]...[/INLINE_KEYBOARD] syntax (primary)
+/// or legacy [BUTTONS]...[/BUTTONS] syntax (fallback for backward compatibility)
 /// Returns (text_without_buttons, optional_keyboard)
 fn parse_inline_buttons(message: &str) -> (String, Option<InlineKeyboard>) {
+    // Try parsing new JSON format first
+    if let Some((text, keyboard)) = parse_inline_keyboard_json(message) {
+        return (text, Some(keyboard));
+    }
+
+    // Fallback to legacy [BUTTONS] format
+    parse_legacy_buttons(message)
+}
+
+/// Parse Telegram's native JSON format: [INLINE_KEYBOARD]...[/INLINE_KEYBOARD]
+fn parse_inline_keyboard_json(message: &str) -> Option<(String, InlineKeyboard)> {
+    let keyboard_start = "[INLINE_KEYBOARD]";
+    let keyboard_end = "[/INLINE_KEYBOARD]";
+
+    let start_idx = message.find(keyboard_start)?;
+    let end_idx = message.find(keyboard_end)?;
+
+    let text_before = &message[..start_idx];
+    let text_after = &message[end_idx + keyboard_end.len()..];
+    let json_section = &message[start_idx + keyboard_start.len()..end_idx].trim();
+
+    // Try to parse the JSON array
+    let parsed: Vec<Vec<serde_json::Value>> = match serde_json::from_str(json_section) {
+        Ok(v) => v,
+        Err(_) => return None, // Parse error - fall back to showing text as-is
+    };
+
+    let mut keyboard = InlineKeyboard::new();
+
+    for row_json in parsed {
+        let mut row = Vec::new();
+        for button_json in row_json {
+            // Extract text (required)
+            let text = button_json
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if text.is_empty() {
+                continue; // Skip buttons without text
+            }
+
+            // Determine button type
+            if let Some(callback_data) = button_json.get("callback_data").and_then(|v| v.as_str()) {
+                // Limit callback_data to 64 bytes (Telegram limit)
+                let callback_data = if callback_data.len() > 64 {
+                    callback_data[..64].to_string()
+                } else {
+                    callback_data.to_string()
+                };
+                row.push(InlineKeyboardButton::new_callback(text, callback_data));
+            } else if let Some(url) = button_json.get("url").and_then(|v| v.as_str()) {
+                row.push(InlineKeyboardButton::new_url(text, url.to_string()));
+            } else if let Some(web_app) = button_json.get("web_app") {
+                row.push(InlineKeyboardButton::new_web_app(text, web_app.clone()));
+            } else {
+                // Button has no valid action - skip it
+                continue;
+            }
+        }
+
+        if !row.is_empty() {
+            keyboard.add_row(row);
+        }
+    }
+
+    if keyboard.buttons.is_empty() {
+        return None;
+    }
+
+    let clean_text = format!("{}{}", text_before.trim(), text_after.trim())
+        .trim()
+        .to_string();
+
+    Some((clean_text, keyboard))
+}
+
+/// Parse legacy [BUTTONS]...[/BUTTONS] syntax for backward compatibility
+fn parse_legacy_buttons(message: &str) -> (String, Option<InlineKeyboard>) {
     let button_start = "[BUTTONS]";
     let button_end = "[/BUTTONS]";
 
@@ -556,10 +680,7 @@ fn parse_inline_buttons(message: &str) -> (String, Option<InlineKeyboard>) {
                         callback_data
                     };
 
-                    current_row.push(InlineKeyboardButton {
-                        text,
-                        callback_data,
-                    });
+                    current_row.push(InlineKeyboardButton::new_callback(text, callback_data));
 
                     // Auto-create rows of max 3 buttons
                     if current_row.len() >= 3 {
@@ -6515,9 +6636,9 @@ mod tests {
         assert_eq!(kb.buttons.len(), 1, "should have one row");
         assert_eq!(kb.buttons[0].len(), 2, "row should have two buttons");
         assert_eq!(kb.buttons[0][0].text, "Yes");
-        assert_eq!(kb.buttons[0][0].callback_data, "yes");
+        assert_eq!(kb.buttons[0][0].callback_data.as_deref(), Some("yes"));
         assert_eq!(kb.buttons[0][1].text, "No");
-        assert_eq!(kb.buttons[0][1].callback_data, "no");
+        assert_eq!(kb.buttons[0][1].callback_data.as_deref(), Some("no"));
     }
 
     #[test]
@@ -6535,11 +6656,11 @@ mod tests {
         assert_eq!(kb.buttons[1].len(), 1, "second row should have one button");
 
         assert_eq!(kb.buttons[0][0].text, "Option A");
-        assert_eq!(kb.buttons[0][0].callback_data, "a");
+        assert_eq!(kb.buttons[0][0].callback_data.as_deref(), Some("a"));
         assert_eq!(kb.buttons[0][1].text, "Option B");
-        assert_eq!(kb.buttons[0][1].callback_data, "b");
+        assert_eq!(kb.buttons[0][1].callback_data.as_deref(), Some("b"));
         assert_eq!(kb.buttons[1][0].text, "Cancel");
-        assert_eq!(kb.buttons[1][0].callback_data, "cancel");
+        assert_eq!(kb.buttons[1][0].callback_data.as_deref(), Some("cancel"));
     }
 
     #[test]
@@ -6592,30 +6713,27 @@ mod tests {
         assert_eq!(kb.buttons[0].len(), 1);
         assert_eq!(kb.buttons[0][0].text, "Test");
         assert_eq!(
-            kb.buttons[0][0].callback_data.len(),
+            kb.buttons[0][0].callback_data.as_ref().unwrap().len(),
             64,
             "callback_data should be truncated to 64 bytes"
         );
-        assert_eq!(kb.buttons[0][0].callback_data, "a".repeat(64));
+        assert_eq!(
+            kb.buttons[0][0].callback_data.as_deref(),
+            Some(&*"a".repeat(64))
+        );
     }
 
     #[test]
     fn test_inline_keyboard_to_json() {
         let mut keyboard = InlineKeyboard::new();
         keyboard.add_row(vec![
-            InlineKeyboardButton {
-                text: "Yes".to_string(),
-                callback_data: "yes".to_string(),
-            },
-            InlineKeyboardButton {
-                text: "No".to_string(),
-                callback_data: "no".to_string(),
-            },
+            InlineKeyboardButton::new_callback("Yes".to_string(), "yes".to_string()),
+            InlineKeyboardButton::new_callback("No".to_string(), "no".to_string()),
         ]);
-        keyboard.add_row(vec![InlineKeyboardButton {
-            text: "Cancel".to_string(),
-            callback_data: "cancel".to_string(),
-        }]);
+        keyboard.add_row(vec![InlineKeyboardButton::new_callback(
+            "Cancel".to_string(),
+            "cancel".to_string(),
+        )]);
 
         let json = keyboard.to_json();
 
@@ -6648,9 +6766,9 @@ mod tests {
         assert_eq!(kb.buttons.len(), 1);
         assert_eq!(kb.buttons[0].len(), 2);
         assert_eq!(kb.buttons[0][0].text, "Yes");
-        assert_eq!(kb.buttons[0][0].callback_data, "yes");
+        assert_eq!(kb.buttons[0][0].callback_data.as_deref(), Some("yes"));
         assert_eq!(kb.buttons[0][1].text, "No");
-        assert_eq!(kb.buttons[0][1].callback_data, "no");
+        assert_eq!(kb.buttons[0][1].callback_data.as_deref(), Some("no"));
     }
 
     #[test]
@@ -6685,6 +6803,210 @@ mod tests {
 
         assert_eq!(text, "Message textTrailing text");
         assert!(keyboard.is_some());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // JSON INLINE_KEYBOARD format tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_inline_keyboard_json_simple() {
+        let message = r#"Choose an option:
+[INLINE_KEYBOARD]
+[
+  [{"text": "Yes", "callback_data": "yes"}],
+  [{"text": "No", "callback_data": "no"}]
+]
+[/INLINE_KEYBOARD]"#;
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "Choose an option:");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 2, "should have two rows");
+        assert_eq!(kb.buttons[0].len(), 1, "first row should have one button");
+        assert_eq!(kb.buttons[1].len(), 1, "second row should have one button");
+        assert_eq!(kb.buttons[0][0].text, "Yes");
+        assert_eq!(kb.buttons[0][0].callback_data.as_deref(), Some("yes"));
+        assert_eq!(kb.buttons[1][0].text, "No");
+        assert_eq!(kb.buttons[1][0].callback_data.as_deref(), Some("no"));
+    }
+
+    #[test]
+    fn test_parse_inline_keyboard_json_multiple_per_row() {
+        let message = r#"[INLINE_KEYBOARD]
+[
+  [{"text": "Yes", "callback_data": "yes"}, {"text": "No", "callback_data": "no"}],
+  [{"text": "Cancel", "callback_data": "cancel"}]
+]
+[/INLINE_KEYBOARD]"#;
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 2, "should have two rows");
+        assert_eq!(kb.buttons[0].len(), 2, "first row should have two buttons");
+        assert_eq!(kb.buttons[1].len(), 1, "second row should have one button");
+        assert_eq!(kb.buttons[0][0].text, "Yes");
+        assert_eq!(kb.buttons[0][0].callback_data.as_deref(), Some("yes"));
+        assert_eq!(kb.buttons[0][1].text, "No");
+        assert_eq!(kb.buttons[0][1].callback_data.as_deref(), Some("no"));
+        assert_eq!(kb.buttons[1][0].text, "Cancel");
+        assert_eq!(kb.buttons[1][0].callback_data.as_deref(), Some("cancel"));
+    }
+
+    #[test]
+    fn test_parse_inline_keyboard_json_url_buttons() {
+        let message = r#"Check these links:
+[INLINE_KEYBOARD]
+[
+  [{"text": "Visit Website", "url": "https://example.com"}],
+  [{"text": "Documentation", "url": "https://docs.example.com"}]
+]
+[/INLINE_KEYBOARD]"#;
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "Check these links:");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 2);
+        assert_eq!(kb.buttons[0][0].text, "Visit Website");
+        assert_eq!(kb.buttons[0][0].url.as_deref(), Some("https://example.com"));
+        assert!(kb.buttons[0][0].callback_data.is_none());
+        assert_eq!(kb.buttons[1][0].text, "Documentation");
+        assert_eq!(
+            kb.buttons[1][0].url.as_deref(),
+            Some("https://docs.example.com")
+        );
+    }
+
+    #[test]
+    fn test_parse_inline_keyboard_json_mixed_buttons() {
+        let message = r#"[INLINE_KEYBOARD]
+[
+  [{"text": "Callback", "callback_data": "action"}],
+  [{"text": "URL", "url": "https://example.com"}]
+]
+[/INLINE_KEYBOARD]"#;
+        let (_text, keyboard) = parse_inline_buttons(message);
+
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 2);
+        assert_eq!(kb.buttons[0][0].callback_data.as_deref(), Some("action"));
+        assert!(kb.buttons[0][0].url.is_none());
+        assert_eq!(kb.buttons[1][0].url.as_deref(), Some("https://example.com"));
+        assert!(kb.buttons[1][0].callback_data.is_none());
+    }
+
+    #[test]
+    fn test_parse_inline_keyboard_json_truncate_callback() {
+        let long_callback = "a".repeat(80);
+        let message = format!(
+            r#"[INLINE_KEYBOARD]
+[
+  [{{"text": "Test", "callback_data": "{}"}}]
+]
+[/INLINE_KEYBOARD]"#,
+            long_callback
+        );
+        let (_text, keyboard) = parse_inline_buttons(&message);
+
+        assert!(keyboard.is_some());
+        let kb = keyboard.unwrap();
+        assert_eq!(
+            kb.buttons[0][0].callback_data.as_ref().unwrap().len(),
+            64,
+            "callback_data should be truncated to 64 bytes"
+        );
+    }
+
+    #[test]
+    fn test_parse_inline_keyboard_json_invalid_falls_back() {
+        let message = r#"Text before
+[INLINE_KEYBOARD]
+invalid json here
+[/INLINE_KEYBOARD]
+Text after"#;
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        // Invalid JSON should fall back to showing original message
+        assert_eq!(text, message);
+        assert!(keyboard.is_none());
+    }
+
+    #[test]
+    fn test_parse_inline_keyboard_json_empty_text_skipped() {
+        let message = r#"[INLINE_KEYBOARD]
+[
+  [{"text": "", "callback_data": "skip"}],
+  [{"text": "Valid", "callback_data": "keep"}]
+]
+[/INLINE_KEYBOARD]"#;
+        let (_text, keyboard) = parse_inline_buttons(message);
+
+        assert!(keyboard.is_some());
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 1, "row with empty text should be skipped");
+        assert_eq!(kb.buttons[0][0].text, "Valid");
+    }
+
+    #[test]
+    fn test_parse_inline_keyboard_json_no_action_skipped() {
+        let message = r#"[INLINE_KEYBOARD]
+[
+  [{"text": "No action"}],
+  [{"text": "Valid", "callback_data": "keep"}]
+]
+[/INLINE_KEYBOARD]"#;
+        let (_text, keyboard) = parse_inline_buttons(message);
+
+        assert!(keyboard.is_some());
+        let kb = keyboard.unwrap();
+        assert_eq!(
+            kb.buttons.len(),
+            1,
+            "button without action should be skipped"
+        );
+        assert_eq!(kb.buttons[0][0].text, "Valid");
+    }
+
+    #[test]
+    fn test_parse_legacy_buttons_still_works() {
+        // Ensure backward compatibility with [BUTTONS] format
+        let message = "[BUTTONS]\nButton -> callback\n[/BUTTONS]";
+        let (_text, keyboard) = parse_inline_buttons(message);
+
+        assert!(keyboard.is_some());
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons[0][0].text, "Button");
+        assert_eq!(kb.buttons[0][0].callback_data.as_deref(), Some("callback"));
+    }
+
+    #[test]
+    fn test_inline_keyboard_to_json_with_url() {
+        let mut keyboard = InlineKeyboard::new();
+        keyboard.add_row(vec![
+            InlineKeyboardButton::new_callback("Callback".to_string(), "data".to_string()),
+            InlineKeyboardButton::new_url("URL".to_string(), "https://example.com".to_string()),
+        ]);
+
+        let json = keyboard.to_json();
+        let inline_kb = json["inline_keyboard"].as_array().unwrap();
+        let row = inline_kb[0].as_array().unwrap();
+
+        assert_eq!(row[0]["text"], "Callback");
+        assert_eq!(row[0]["callback_data"], "data");
+        assert!(row[0].get("url").is_none());
+
+        assert_eq!(row[1]["text"], "URL");
+        assert_eq!(row[1]["url"], "https://example.com");
+        assert!(row[1].get("callback_data").is_none());
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -6726,7 +7048,12 @@ mod tests {
 
     #[test]
     fn test_parse_callback_query_unauthorized() {
-        let ch = TelegramChannel::new("fake-token".into(), vec!["authorized_user".into()], false, false);
+        let ch = TelegramChannel::new(
+            "fake-token".into(),
+            vec!["authorized_user".into()],
+            false,
+            false,
+        );
 
         let update = serde_json::json!({
             "callback_query": {
