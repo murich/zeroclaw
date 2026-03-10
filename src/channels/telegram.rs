@@ -46,6 +46,61 @@ struct VoiceMetadata {
     mime_type_hint: Option<String>,
     voice_note: bool,
 }
+
+/// Represents a callback query from an inline keyboard button
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallbackQuery {
+    id: String,
+    from_user_id: String,
+    chat_id: String,
+    message_id: Option<i64>,
+    data: String,
+}
+
+/// Represents a single inline keyboard button
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineKeyboardButton {
+    text: String,
+    callback_data: String,
+}
+
+/// Represents an inline keyboard (rows of buttons)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineKeyboard {
+    buttons: Vec<Vec<InlineKeyboardButton>>,
+}
+
+impl InlineKeyboard {
+    fn new() -> Self {
+        Self { buttons: vec![] }
+    }
+
+    fn add_row(&mut self, row: Vec<InlineKeyboardButton>) {
+        self.buttons.push(row);
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let inline_keyboard: Vec<Vec<serde_json::Value>> = self
+            .buttons
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|btn| {
+                        serde_json::json!({
+                            "text": btn.text,
+                            "callback_data": btn.callback_data
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+
+        serde_json::json!({
+            "inline_keyboard": inline_keyboard
+        })
+    }
+}
+
 const TELEGRAM_BIND_COMMAND: &str = "/bind";
 const TELEGRAM_APPROVAL_CALLBACK_APPROVE_PREFIX: &str = "zcapr:yes:";
 const TELEGRAM_APPROVAL_CALLBACK_DENY_PREFIX: &str = "zcapr:no:";
@@ -449,6 +504,88 @@ fn parse_attachment_markers(message: &str) -> (String, Vec<TelegramAttachment>) 
     }
 
     (cleaned.trim().to_string(), attachments)
+}
+
+/// Parse inline buttons from message text using [BUTTONS]...[/BUTTONS] syntax
+/// Returns (text_without_buttons, optional_keyboard)
+fn parse_inline_buttons(message: &str) -> (String, Option<InlineKeyboard>) {
+    let button_start = "[BUTTONS]";
+    let button_end = "[/BUTTONS]";
+
+    if let Some(start_idx) = message.find(button_start) {
+        if let Some(end_idx) = message.find(button_end) {
+            let text_before = &message[..start_idx];
+            let text_after = &message[end_idx + button_end.len()..];
+            let button_section = &message[start_idx + button_start.len()..end_idx];
+
+            let mut keyboard = InlineKeyboard::new();
+            let mut current_row = Vec::new();
+
+            for line in button_section.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+
+                // Row separator: "---" or "ROW"
+                if line == "---" || line.eq_ignore_ascii_case("ROW") {
+                    if !current_row.is_empty() {
+                        keyboard.add_row(current_row);
+                        current_row = Vec::new();
+                    }
+                    continue;
+                }
+
+                // Support formats: "Button Text -> callback_data" or "Button Text | callback_data"
+                let parts: Vec<&str> = if line.contains("->") {
+                    line.split("->").collect()
+                } else if line.contains('|') {
+                    line.split('|').collect()
+                } else {
+                    continue;
+                };
+
+                if parts.len() == 2 {
+                    let text = parts[0].trim().to_string();
+                    let callback_data = parts[1].trim().to_string();
+
+                    // Limit callback_data to 64 bytes (Telegram limit)
+                    let callback_data = if callback_data.len() > 64 {
+                        callback_data[..64].to_string()
+                    } else {
+                        callback_data
+                    };
+
+                    current_row.push(InlineKeyboardButton {
+                        text,
+                        callback_data,
+                    });
+
+                    // Auto-create rows of max 3 buttons
+                    if current_row.len() >= 3 {
+                        keyboard.add_row(current_row);
+                        current_row = Vec::new();
+                    }
+                }
+            }
+
+            // Add remaining buttons
+            if !current_row.is_empty() {
+                keyboard.add_row(current_row);
+            }
+
+            if keyboard.buttons.is_empty() {
+                return (message.to_string(), None);
+            }
+
+            let clean_text = format!("{}{}", text_before.trim(), text_after.trim())
+                .trim()
+                .to_string();
+            return (clean_text, Some(keyboard));
+        }
+    }
+
+    (message.to_string(), None)
 }
 
 /// Telegram Bot API maximum file download size (20 MB).
@@ -2093,6 +2230,60 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         })
     }
 
+    /// Parse callback_query updates from inline keyboard button clicks
+    fn parse_callback_query(&self, update: &serde_json::Value) -> Option<ChannelMessage> {
+        let callback_query = update.get("callback_query")?;
+
+        // Extract sender info
+        let (username, sender_id, sender_identity) = Self::extract_sender_info(callback_query);
+
+        let mut identities = vec![username.as_str()];
+        if let Some(id) = sender_id.as_deref() {
+            identities.push(id);
+        }
+
+        // Check authorization
+        if !self.is_any_user_allowed(identities.iter().copied()) {
+            return None;
+        }
+
+        let data = callback_query.get("data")?.as_str()?.to_string();
+        let message = callback_query.get("message")?;
+        let chat = message.get("chat")?;
+        let chat_id = chat.get("id")?.as_i64()?.to_string();
+        let message_id = message.get("message_id")?.as_i64()?;
+        let callback_id = callback_query.get("id")?.as_str()?.to_string();
+
+        // Extract thread/topic ID for forum support
+        let thread_id = message
+            .get("message_thread_id")
+            .and_then(serde_json::Value::as_i64)
+            .map(|id| id.to_string());
+
+        // reply_target: chat_id or chat_id:thread_id format
+        let reply_target = if let Some(ref tid) = thread_id {
+            format!("{}:{}", chat_id, tid)
+        } else {
+            chat_id.clone()
+        };
+
+        // Format as user message: "Button clicked: {data}"
+        let content = format!("🔘 Button clicked: {}", data);
+
+        Some(ChannelMessage {
+            id: format!("telegram_{chat_id}_{message_id}_{callback_id}"),
+            sender: sender_identity,
+            reply_target,
+            content,
+            channel: "telegram".to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            thread_ts: thread_id,
+        })
+    }
+
     /// Download a Telegram photo by file_id, resize to fit within 1024px, and return as base64 data URI.
     async fn resolve_photo_data_uri(&self, file_id: &str) -> anyhow::Result<String> {
         use base64::Engine as _;
@@ -2297,6 +2488,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         message: &str,
         chat_id: &str,
         thread_id: Option<&str>,
+        keyboard: Option<&InlineKeyboard>,
     ) -> anyhow::Result<()> {
         let chunks = split_message_for_telegram(message);
 
@@ -2322,6 +2514,13 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             // Add message_thread_id for forum topic support
             if let Some(tid) = thread_id {
                 markdown_body["message_thread_id"] = serde_json::Value::String(tid.to_string());
+            }
+
+            // Add inline keyboard to the last chunk only
+            if index == chunks.len() - 1 {
+                if let Some(kb) = keyboard {
+                    markdown_body["reply_markup"] = kb.to_json();
+                }
             }
 
             let markdown_resp = self
@@ -2354,6 +2553,14 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             if let Some(tid) = thread_id {
                 plain_body["message_thread_id"] = serde_json::Value::String(tid.to_string());
             }
+
+            // Add inline keyboard to the last chunk only
+            if index == chunks.len() - 1 {
+                if let Some(kb) = keyboard {
+                    plain_body["reply_markup"] = kb.to_json();
+                }
+            }
+
             let plain_resp = self
                 .http_client()
                 .post(self.api_url("sendMessage"))
@@ -2471,7 +2678,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                     TelegramAttachmentKind::Voice => "Voice",
                 };
                 let fallback_text = format!("{kind_label}: {target}");
-                self.send_text_chunks(&fallback_text, chat_id, thread_id)
+                self.send_text_chunks(&fallback_text, chat_id, thread_id, None)
                     .await?;
             }
 
@@ -2910,6 +3117,35 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         self.send_media_by_url("sendVoice", "voice", chat_id, thread_id, url, caption)
             .await
     }
+
+    /// Answer a callback query from an inline keyboard button
+    pub async fn answer_callback_query(
+        &self,
+        callback_query_id: &str,
+        text: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut body = serde_json::json!({
+            "callback_query_id": callback_query_id,
+        });
+
+        if let Some(t) = text {
+            body["text"] = serde_json::Value::String(t.to_string());
+        }
+
+        let resp = self
+            .http_client()
+            .post(self.api_url("answerCallbackQuery"))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await?;
+            tracing::warn!("Failed to answer callback query: {}", err);
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -3101,7 +3337,7 @@ impl Channel for TelegramChannel {
 
         if is_native_draft {
             if !text_without_markers.is_empty() {
-                self.send_text_chunks(&text_without_markers, &chat_id, thread_id.as_deref())
+                self.send_text_chunks(&text_without_markers, &chat_id, thread_id.as_deref(), None)
                     .await?;
             }
 
@@ -3140,7 +3376,7 @@ impl Channel for TelegramChannel {
 
             // Send text without markers
             if !text_without_markers.is_empty() {
-                self.send_text_chunks(&text_without_markers, &chat_id, thread_id.as_deref())
+                self.send_text_chunks(&text_without_markers, &chat_id, thread_id.as_deref(), None)
                     .await?;
             }
 
@@ -3169,13 +3405,13 @@ impl Channel for TelegramChannel {
 
             // Fall back to chunked send
             return self
-                .send_text_chunks(text, &chat_id, thread_id.as_deref())
+                .send_text_chunks(text, &chat_id, thread_id.as_deref(), None)
                 .await;
         }
 
         let Some(id) = msg_id else {
             return self
-                .send_text_chunks(text, &chat_id, thread_id.as_deref())
+                .send_text_chunks(text, &chat_id, thread_id.as_deref(), None)
                 .await;
         };
 
@@ -3258,7 +3494,7 @@ impl Channel for TelegramChannel {
         match del_resp {
             Ok(r) if r.status().is_success() => {
                 // Draft deleted — safe to send fresh message without duplication
-                self.send_text_chunks(text, &chat_id, thread_id.as_deref())
+                self.send_text_chunks(text, &chat_id, thread_id.as_deref(), None)
                     .await
             }
             Ok(r) => {
@@ -3329,11 +3565,14 @@ impl Channel for TelegramChannel {
             None => (message.recipient.as_str(), None),
         };
 
-        let (text_without_markers, attachments) = parse_attachment_markers(&content);
+        // Parse inline buttons
+        let (text_without_buttons, keyboard) = parse_inline_buttons(&content);
+
+        let (text_without_markers, attachments) = parse_attachment_markers(&text_without_buttons);
 
         if !attachments.is_empty() {
             if !text_without_markers.is_empty() {
-                self.send_text_chunks(&text_without_markers, chat_id, thread_id)
+                self.send_text_chunks(&text_without_markers, chat_id, thread_id, keyboard.as_ref())
                     .await?;
             }
 
@@ -3350,7 +3589,8 @@ impl Channel for TelegramChannel {
             return Ok(());
         }
 
-        self.send_text_chunks(&content, chat_id, thread_id).await
+        self.send_text_chunks(&text_without_buttons, chat_id, thread_id, keyboard.as_ref())
+            .await
     }
 
     async fn send_approval_prompt(
@@ -3560,6 +3800,27 @@ Ensure only one `zeroclaw` process is using this bot token."
                     // Advance offset past this update
                     if let Some(uid) = update.get("update_id").and_then(serde_json::Value::as_i64) {
                         offset = uid + 1;
+                    }
+
+                    // Handle callback queries first
+                    if update.get("callback_query").is_some() {
+                        if let Some(callback_query) = update.get("callback_query") {
+                            if let Some(callback_id) =
+                                callback_query.get("id").and_then(|v| v.as_str())
+                            {
+                                // Answer the callback query to remove loading state
+                                let _ = self
+                                    .answer_callback_query(callback_id, Some("Processing..."))
+                                    .await;
+                            }
+                        }
+
+                        if let Some(msg) = self.parse_callback_query(update) {
+                            if tx.send(msg).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        continue;
                     }
 
                     let msg = if let Some(m) = self.parse_update_message(update) {
@@ -6238,5 +6499,256 @@ mod tests {
             format_attachment_content(IncomingAttachmentKind::Document, "report.pdf", path);
         assert_eq!(result, "[Document: report.pdf] /tmp/workspace/report.pdf");
         assert!(!result.starts_with("[IMAGE:"));
+    }
+
+    // ── Button parsing tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_parse_inline_buttons_simple() {
+        let message = "Here are your options:\n[BUTTONS]\nYes -> yes\nNo -> no\n[/BUTTONS]";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "Here are your options:");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 1, "should have one row");
+        assert_eq!(kb.buttons[0].len(), 2, "row should have two buttons");
+        assert_eq!(kb.buttons[0][0].text, "Yes");
+        assert_eq!(kb.buttons[0][0].callback_data, "yes");
+        assert_eq!(kb.buttons[0][1].text, "No");
+        assert_eq!(kb.buttons[0][1].callback_data, "no");
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_multirow() {
+        let message =
+            "Pick one:\n[BUTTONS]\nOption A -> a\nOption B -> b\n---\nCancel -> cancel\n[/BUTTONS]";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "Pick one:");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 2, "should have two rows");
+        assert_eq!(kb.buttons[0].len(), 2, "first row should have two buttons");
+        assert_eq!(kb.buttons[1].len(), 1, "second row should have one button");
+
+        assert_eq!(kb.buttons[0][0].text, "Option A");
+        assert_eq!(kb.buttons[0][0].callback_data, "a");
+        assert_eq!(kb.buttons[0][1].text, "Option B");
+        assert_eq!(kb.buttons[0][1].callback_data, "b");
+        assert_eq!(kb.buttons[1][0].text, "Cancel");
+        assert_eq!(kb.buttons[1][0].callback_data, "cancel");
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_auto_wrap() {
+        let message = "[BUTTONS]\nBtn1 -> 1\nBtn2 -> 2\nBtn3 -> 3\nBtn4 -> 4\n[/BUTTONS]";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(
+            kb.buttons.len(),
+            2,
+            "should auto-wrap into two rows at 3 buttons"
+        );
+        assert_eq!(
+            kb.buttons[0].len(),
+            3,
+            "first row should have three buttons"
+        );
+        assert_eq!(kb.buttons[1].len(), 1, "second row should have one button");
+
+        assert_eq!(kb.buttons[0][0].text, "Btn1");
+        assert_eq!(kb.buttons[0][1].text, "Btn2");
+        assert_eq!(kb.buttons[0][2].text, "Btn3");
+        assert_eq!(kb.buttons[1][0].text, "Btn4");
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_no_buttons() {
+        let message = "Just a plain message without any buttons.";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, message);
+        assert!(keyboard.is_none());
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_truncate_callback() {
+        let long_callback = "a".repeat(80);
+        let message = format!("[BUTTONS]\nTest -> {}\n[/BUTTONS]", long_callback);
+        let (text, keyboard) = parse_inline_buttons(&message);
+
+        assert_eq!(text, "");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 1);
+        assert_eq!(kb.buttons[0].len(), 1);
+        assert_eq!(kb.buttons[0][0].text, "Test");
+        assert_eq!(
+            kb.buttons[0][0].callback_data.len(),
+            64,
+            "callback_data should be truncated to 64 bytes"
+        );
+        assert_eq!(kb.buttons[0][0].callback_data, "a".repeat(64));
+    }
+
+    #[test]
+    fn test_inline_keyboard_to_json() {
+        let mut keyboard = InlineKeyboard::new();
+        keyboard.add_row(vec![
+            InlineKeyboardButton {
+                text: "Yes".to_string(),
+                callback_data: "yes".to_string(),
+            },
+            InlineKeyboardButton {
+                text: "No".to_string(),
+                callback_data: "no".to_string(),
+            },
+        ]);
+        keyboard.add_row(vec![InlineKeyboardButton {
+            text: "Cancel".to_string(),
+            callback_data: "cancel".to_string(),
+        }]);
+
+        let json = keyboard.to_json();
+
+        assert!(json.get("inline_keyboard").is_some());
+        let inline_kb = json["inline_keyboard"].as_array().unwrap();
+        assert_eq!(inline_kb.len(), 2, "should have two rows");
+
+        let row1 = inline_kb[0].as_array().unwrap();
+        assert_eq!(row1.len(), 2, "first row should have two buttons");
+        assert_eq!(row1[0]["text"], "Yes");
+        assert_eq!(row1[0]["callback_data"], "yes");
+        assert_eq!(row1[1]["text"], "No");
+        assert_eq!(row1[1]["callback_data"], "no");
+
+        let row2 = inline_kb[1].as_array().unwrap();
+        assert_eq!(row2.len(), 1, "second row should have one button");
+        assert_eq!(row2[0]["text"], "Cancel");
+        assert_eq!(row2[0]["callback_data"], "cancel");
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_pipe_separator() {
+        let message = "[BUTTONS]\nYes | yes\nNo | no\n[/BUTTONS]";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 1);
+        assert_eq!(kb.buttons[0].len(), 2);
+        assert_eq!(kb.buttons[0][0].text, "Yes");
+        assert_eq!(kb.buttons[0][0].callback_data, "yes");
+        assert_eq!(kb.buttons[0][1].text, "No");
+        assert_eq!(kb.buttons[0][1].callback_data, "no");
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_row_keyword() {
+        let message = "[BUTTONS]\nBtn1 -> 1\nROW\nBtn2 -> 2\n[/BUTTONS]";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "");
+        assert!(keyboard.is_some());
+
+        let kb = keyboard.unwrap();
+        assert_eq!(kb.buttons.len(), 2, "ROW keyword should create new row");
+        assert_eq!(kb.buttons[0].len(), 1);
+        assert_eq!(kb.buttons[1].len(), 1);
+        assert_eq!(kb.buttons[0][0].text, "Btn1");
+        assert_eq!(kb.buttons[1][0].text, "Btn2");
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_empty_section() {
+        let message = "Text before\n[BUTTONS]\n\n\n[/BUTTONS]\nText after";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, message, "empty button section should be ignored");
+        assert!(keyboard.is_none());
+    }
+
+    #[test]
+    fn test_parse_inline_buttons_text_cleanup() {
+        let message = "Message text   \n[BUTTONS]\nBtn -> data\n[/BUTTONS]   \n  Trailing text";
+        let (text, keyboard) = parse_inline_buttons(message);
+
+        assert_eq!(text, "Message textTrailing text");
+        assert!(keyboard.is_some());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // parse_callback_query tests
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_callback_query() {
+        let ch = TelegramChannel::new("fake-token".into(), vec!["test_user".into()], false, false);
+
+        let update = serde_json::json!({
+            "callback_query": {
+                "id": "callback123",
+                "from": {
+                    "id": 12345,
+                    "username": "test_user"
+                },
+                "message": {
+                    "message_id": 42,
+                    "chat": {
+                        "id": -100200300
+                    }
+                },
+                "data": "action_confirm"
+            }
+        });
+
+        let msg = ch.parse_callback_query(&update);
+        assert!(msg.is_some(), "Authorized user callback should be parsed");
+
+        let msg = msg.unwrap();
+        assert_eq!(msg.sender, "test_user");
+        assert_eq!(msg.reply_target, "-100200300");
+        assert_eq!(msg.content, "🔘 Button clicked: action_confirm");
+        assert_eq!(msg.channel, "telegram");
+        assert!(msg.id.starts_with("telegram_-100200300_42_callback123"));
+        assert_eq!(msg.thread_ts, None);
+    }
+
+    #[test]
+    fn test_parse_callback_query_unauthorized() {
+        let ch = TelegramChannel::new("fake-token".into(), vec!["authorized_user".into()], false, false);
+
+        let update = serde_json::json!({
+            "callback_query": {
+                "id": "callback456",
+                "from": {
+                    "id": 99999,
+                    "username": "unauthorized_user"
+                },
+                "message": {
+                    "message_id": 100,
+                    "chat": {
+                        "id": -100200300
+                    }
+                },
+                "data": "action_delete"
+            }
+        });
+
+        let msg = ch.parse_callback_query(&update);
+        assert!(
+            msg.is_none(),
+            "Unauthorized user callback should be rejected"
+        );
     }
 }

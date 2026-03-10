@@ -18,6 +18,7 @@ Localized hubs: [简体中文](i18n/zh-CN/README.md) · [日本語](i18n/ja/READ
 | Check config defaults and keys quickly | [config-reference.md](config-reference.md) |
 | Configure custom providers/endpoints | [custom-providers.md](custom-providers.md) |
 | Configure Z.AI / GLM provider | [zai-glm-setup.md](zai-glm-setup.md) |
+| Use Telegram interactive inline buttons | [telegram-inline-buttons.md](telegram-inline-buttons.md) |
 | Use LangGraph integration patterns | [langgraph-integration.md](langgraph-integration.md) |
 | Apply proxy scope safely | [proxy-agent-playbook.md](proxy-agent-playbook.md) |
 | Operate runtime (day-2 runbook) | [operations-runbook.md](operations-runbook.md) |
@@ -60,6 +61,7 @@ Installation source-of-truth: keep install/run instructions in repository docs a
 - [commands-reference.md](commands-reference.md) — command lookup by workflow
 - [providers-reference.md](providers-reference.md) — provider IDs, aliases, credential env vars
 - [channels-reference.md](channels-reference.md) — channel capabilities and setup paths
+- [telegram-inline-buttons.md](telegram-inline-buttons.md) — Telegram interactive inline keyboard buttons guide
 - [matrix-e2ee-guide.md](matrix-e2ee-guide.md) — Matrix encrypted-room (E2EE) setup and no-response diagnostics
 - [config-reference.md](config-reference.md) — high-signal config keys and secure defaults
 - [custom-providers.md](custom-providers.md) — custom provider/base URL integration templates

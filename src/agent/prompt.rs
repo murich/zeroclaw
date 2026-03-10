@@ -55,6 +55,7 @@ impl SystemPromptBuilder {
             sections: vec![
                 Box::new(IdentitySection),
                 Box::new(ToolsSection),
+                Box::new(ButtonsSection),
                 Box::new(SafetySection),
                 Box::new(SkillsSection),
                 Box::new(WorkspaceSection),
@@ -86,6 +87,7 @@ impl SystemPromptBuilder {
 
 pub struct IdentitySection;
 pub struct ToolsSection;
+pub struct ButtonsSection;
 pub struct SafetySection;
 pub struct SkillsSection;
 pub struct WorkspaceSection;
@@ -169,6 +171,46 @@ impl PromptSection for ToolsSection {
             out.push_str(ctx.dispatcher_instructions);
         }
         Ok(out)
+    }
+}
+
+impl PromptSection for ButtonsSection {
+    fn name(&self) -> &str {
+        "buttons"
+    }
+
+    fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
+        Ok(r#"## Interactive Buttons (Telegram)
+
+You can send interactive inline keyboard buttons with your Telegram responses:
+
+[BUTTONS]
+Button Text -> callback_data
+Another Button -> another_callback
+---
+Second Row Button -> second_row
+[/BUTTONS]
+
+Rules:
+- Place [BUTTONS]...[/BUTTONS] anywhere in your message
+- Each line: "Display Text -> callback_data" or "Display Text | callback_data"
+- Use "---" or "ROW" to start a new row
+- Max 3 buttons per row (auto-wrapped)
+- Callback data limited to 64 characters
+- Buttons appear only in Telegram channel
+
+Example:
+What would you like to do?
+
+[BUTTONS]
+✅ Approve -> approve_action
+❌ Reject -> reject_action
+---
+ℹ️ More Info -> show_info
+[/BUTTONS]
+
+When a user clicks a button, you'll receive: "🔘 Button clicked: {callback_data}""#
+            .into())
     }
 }
 

@@ -136,6 +136,411 @@ After running automated tests, perform these manual checks:
 
     - Verify: Completes in <5 seconds
 
+## 🔘 Inline Buttons Testing
+
+The inline buttons feature allows the AI to present interactive button menus in Telegram messages. This section covers automated and manual testing procedures.
+
+### Automated Button Tests (9 tests)
+
+Run button-specific unit tests:
+
+```bash
+# All button parsing tests
+cargo test telegram test_parse_inline_buttons --lib
+
+# Specific test scenarios
+cargo test test_parse_inline_buttons_simple --lib -- --nocapture
+cargo test test_parse_inline_buttons_multirow --lib -- --nocapture
+cargo test test_parse_inline_buttons_auto_wrap --lib -- --nocapture
+cargo test test_parse_inline_buttons_truncate_callback --lib -- --nocapture
+```
+
+The automated test suite validates:
+
+- ✅ Simple button parsing (single row)
+- ✅ Multi-row button layouts with `---` separator
+- ✅ Automatic button wrapping (>3 buttons per row)
+- ✅ Callback data truncation (64 char limit)
+- ✅ Pipe separator support (`|` in addition to `->`)
+- ✅ ROW keyword support as row separator
+- ✅ Empty button section handling
+- ✅ Text cleanup around button blocks
+- ✅ No-button message passthrough
+
+### Manual Button Tests (6 tests)
+
+After running automated tests, perform these manual checks with a running Telegram bot:
+
+1. **Basic button interaction**
+
+    ```bash
+    zeroclaw channel start
+    ```
+
+    Send this message to the bot in Telegram (or ask the AI to send it):
+
+    ```
+    Test message with buttons:
+
+    [BUTTONS]
+    ✅ Approve -> btn_approve
+    ❌ Reject -> btn_reject
+    [/BUTTONS]
+    ```
+
+    - Verify: Two buttons appear in a single row
+    - Click "Approve" button
+    - Verify: Bot receives message `🔘 Button clicked: btn_approve`
+    - Verify: Button shows brief loading indicator then returns to normal
+    - Click "Reject" button
+    - Verify: Bot receives message `🔘 Button clicked: btn_reject`
+
+2. **Multi-row button layout**
+
+    Send this message:
+
+    ```
+    Choose your action:
+
+    [BUTTONS]
+    🔍 Search -> action_search
+    📝 Create -> action_create
+    ---
+    📋 List -> action_list
+    🗑️ Delete -> action_delete
+    ---
+    ❌ Cancel -> action_cancel
+    [/BUTTONS]
+    ```
+
+    - Verify: Buttons appear in 3 rows (2+2+1 layout)
+    - Click any button
+    - Verify: Correct callback data received
+    - Verify: All rows render properly
+
+3. **Auto-wrap behavior (>3 buttons)**
+
+    Send this message:
+
+    ```
+    Select a number:
+
+    [BUTTONS]
+    1️⃣ One -> num_1
+    2️⃣ Two -> num_2
+    3️⃣ Three -> num_3
+    4️⃣ Four -> num_4
+    5️⃣ Five -> num_5
+    [/BUTTONS]
+    ```
+
+    - Verify: Buttons automatically wrap to 2 rows (3+2 layout)
+    - Click buttons from both rows
+    - Verify: All callbacks work correctly
+
+4. **Callback data truncation (64 char limit)**
+
+    Send this message with long callback data:
+
+    ```
+    [BUTTONS]
+    Test Long Callback -> this_is_a_very_long_callback_data_string_that_exceeds_the_telegram_api_limit_of_64_characters_and_should_be_truncated
+    [/BUTTONS]
+    ```
+
+    - Verify: Button appears and is clickable
+    - Click the button
+    - Verify: Callback data is truncated to 64 characters
+    - Check logs for truncation warning
+
+5. **AI-generated button interaction**
+
+    Send this message to the AI:
+
+    ```
+    Create a yes/no question with buttons
+    ```
+
+    - Verify: AI generates response with `[BUTTONS]...[/BUTTONS]` syntax
+    - Verify: Buttons render correctly in Telegram
+    - Click one of the buttons
+    - Verify: AI receives and responds to the callback
+    - Verify: AI can continue the conversation based on button click
+
+6. **Button removal from message text**
+
+    Send this message:
+
+    ```
+    Text before buttons
+
+    [BUTTONS]
+    Button 1 -> data1
+    Button 2 -> data2
+    [/BUTTONS]
+
+    Text after buttons
+    ```
+
+    - Verify: Message displays as "Text before buttons\n\nText after buttons"
+    - Verify: Button block is completely removed from visible text
+    - Verify: Buttons appear below the message
+    - Verify: Both buttons are clickable
+
+### Example Test Conversations
+
+#### Scenario 1: Deployment Confirmation
+
+```
+User: Deploy to production
+
+AI: I'm ready to deploy to production. Please confirm:
+
+[BUTTONS]
+✅ Deploy Now -> deploy_prod_confirm
+⏰ Schedule Later -> deploy_schedule
+❌ Cancel -> deploy_cancel
+[/BUTTONS]
+
+User: [clicks "Deploy Now"]
+
+AI receives: 🔘 Button clicked: deploy_prod_confirm
+
+AI: Deployment initiated. Monitoring progress...
+```
+
+**Validation:**
+- Buttons render in single row
+- Callback received correctly
+- AI responds appropriately to callback
+
+#### Scenario 2: Multi-Step Workflow
+
+```
+User: Set up CI/CD
+
+AI: Step 1/3: Choose environment
+
+[BUTTONS]
+🔧 Development -> env_dev
+🧪 Staging -> env_staging
+🚀 Production -> env_prod
+[/BUTTONS]
+
+User: [clicks "Production"]
+
+AI receives: 🔘 Button clicked: env_prod
+
+AI: Step 2/3: Select deployment strategy
+
+[BUTTONS]
+🔄 Rolling Update -> strategy_rolling
+⚡ Blue-Green -> strategy_bluegreen
+---
+❌ Cancel -> workflow_cancel
+[/BUTTONS]
+
+User: [clicks "Rolling Update"]
+
+AI receives: 🔘 Button clicked: strategy_rolling
+
+AI: Configuration complete! Rolling update to production environment.
+```
+
+**Validation:**
+- Multi-step button workflow functions correctly
+- State maintained between button clicks
+- Cancel option available and functional
+
+#### Scenario 3: Pagination Controls
+
+```
+User: List all tasks
+
+AI: Showing tasks 1-5 of 23:
+
+1. Fix authentication bug
+2. Update dependencies
+3. Write documentation
+4. Review pull request
+5. Deploy to staging
+
+[BUTTONS]
+◀️ Previous -> page_0
+📄 Page 1/5 -> page_current
+▶️ Next -> page_2
+[/BUTTONS]
+
+User: [clicks "Next"]
+
+AI receives: 🔘 Button clicked: page_2
+
+AI: Showing tasks 6-10 of 23:
+[... continues with next page ...]
+```
+
+**Validation:**
+- Pagination buttons render correctly
+- Navigation between pages works
+- Current page indicator present
+
+### Troubleshooting Button Issues
+
+#### Issue: Buttons Don't Appear
+
+**Symptoms:**
+- Message sends but no buttons visible
+- Button syntax appears in message text
+
+**Solutions:**
+
+1. **Verify syntax:**
+   ```bash
+   # Check logs for parsing errors
+   RUST_LOG=debug zeroclaw channel start
+   ```
+
+   - Ensure `[BUTTONS]` and `[/BUTTONS]` tags are exact matches
+   - Check that each button uses `->` or `|` separator
+   - Verify no typos in button block
+
+2. **Validate message format:**
+   ```
+   # Correct format
+   [BUTTONS]
+   Button Text -> callback_data
+   [/BUTTONS]
+
+   # Incorrect formats (won't work)
+   [buttons]  # lowercase
+   Button Text - callback  # single dash
+   Button Text: callback  # colon separator
+   ```
+
+3. **Check for empty button blocks:**
+   - Empty `[BUTTONS][/BUTTONS]` blocks are ignored
+   - Must have at least one valid button line
+
+#### Issue: Callbacks Not Received
+
+**Symptoms:**
+- Buttons appear but clicks don't trigger agent response
+- No `🔘 Button clicked:` message in logs
+
+**Solutions:**
+
+1. **Verify bot configuration:**
+   ```bash
+   # Check Telegram config
+   cat ~/.zeroclaw/config.toml | grep -A 5 "\[channels_config.telegram\]"
+   ```
+
+   - Ensure `allowed_users` includes the clicking user
+   - Verify bot token is valid
+
+2. **Check daemon status:**
+   ```bash
+   # Restart channel
+   zeroclaw channel stop
+   zeroclaw channel start
+
+   # Check health
+   zeroclaw channel doctor
+   ```
+
+3. **Review allowed_updates:**
+   - Verify Telegram bot config includes `callback_query` in allowed updates
+   - This should be automatic, but check logs for update filtering
+
+4. **Test with verbose logging:**
+   ```bash
+   RUST_LOG=trace zeroclaw channel start
+   ```
+
+   - Look for callback_query events in logs
+   - Check for callback acknowledgment messages
+
+#### Issue: Callback Data Truncated
+
+**Symptoms:**
+- Long callback data appears shortened
+- Warning in logs about truncation
+
+**Expected Behavior:**
+- Telegram limits callback data to 64 characters
+- ZeroClaw automatically truncates longer data
+- This is expected and not an error
+
+**Solutions:**
+
+1. **Use shorter callback identifiers:**
+   ```
+   # Instead of:
+   very_long_descriptive_callback_data_that_exceeds_limit
+
+   # Use:
+   action_deploy_prod
+   ```
+
+2. **Use structured short codes:**
+   ```
+   # Format: type:action:id
+   deploy:prod:123
+   select:env:staging
+   ```
+
+3. **Store complex data elsewhere:**
+   - Use callback data as a key/reference
+   - Store full context in memory or session state
+   - Look up details when callback is received
+
+#### Issue: Button Layout Incorrect
+
+**Symptoms:**
+- Buttons appear in wrong number of rows
+- Too many or too few buttons per row
+
+**Expected Behavior:**
+- Maximum 3 buttons per row (auto-wrap)
+- `---` or `ROW` creates explicit row break
+- Empty lines ignored
+
+**Solutions:**
+
+1. **Use explicit row separators:**
+   ```
+   [BUTTONS]
+   Button 1 -> data1
+   Button 2 -> data2
+   ---
+   Button 3 -> data3
+   [/BUTTONS]
+   ```
+
+2. **Check for extra whitespace:**
+   - Remove leading/trailing spaces on button lines
+   - Ensure separators are on their own lines
+
+3. **Verify button count:**
+   - Telegram API limits to 8 buttons total per message
+   - Reduce number of buttons if limit exceeded
+
+### Button Feature Checklist
+
+Before merging button-related changes:
+
+- [ ] All unit tests pass (`cargo test telegram test_parse_inline_buttons --lib`)
+- [ ] Manual button interaction test completed
+- [ ] Multi-row layout test completed
+- [ ] Auto-wrap behavior verified
+- [ ] Callback reception confirmed
+- [ ] AI-generated button interaction verified
+- [ ] Button text removal from message validated
+- [ ] Example conversations tested
+- [ ] Troubleshooting scenarios validated
+- [ ] No clippy warnings in button code
+- [ ] Button documentation updated
+
 ## 🔍 Test Results Interpretation
 
 ### Success Criteria
