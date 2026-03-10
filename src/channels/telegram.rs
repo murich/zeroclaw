@@ -7078,4 +7078,91 @@ Text after"#;
             "Unauthorized user callback should be rejected"
         );
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // End-to-end integration test for complete button flow
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_inline_keyboard_end_to_end_json_parsing() {
+        // Test with the Russian example to verify:
+        // 1. JSON parsing extracts the keyboard correctly
+        // 2. Keyboard structure is correct (2 rows with proper button counts)
+        // 3. Button text and callback_data are preserved (including emoji)
+        // 4. Clean text has [INLINE_KEYBOARD] block removed
+        let message = r#"Вот демо с кнопками:
+[INLINE_KEYBOARD]
+[
+  [{"text": "🎯 Цели", "callback_data": "goals_list"}, {"text": "📋 Рутины", "callback_data": "routines_list"}],
+  [{"text": "⚡ Энергия", "callback_data": "energy_log"}]
+]
+[/INLINE_KEYBOARD]"#;
+
+        // Step 1: Call parse_inline_buttons() to extract the keyboard
+        let (clean_text, keyboard) = parse_inline_buttons(message);
+
+        // Step 2: Verify the keyboard was parsed correctly
+        assert!(keyboard.is_some(), "Keyboard should be parsed successfully");
+        let kb = keyboard.unwrap();
+
+        // Step 3: Verify keyboard structure
+        // - Keyboard has 2 rows
+        assert_eq!(kb.buttons.len(), 2, "Keyboard should have 2 rows");
+
+        // - First row has 2 buttons
+        assert_eq!(kb.buttons[0].len(), 2, "First row should have 2 buttons");
+
+        // - Second row has 1 button
+        assert_eq!(kb.buttons[1].len(), 1, "Second row should have 1 button");
+
+        // Step 4: Verify button text and callback_data are correct (including emoji)
+        // First row, first button
+        assert_eq!(
+            kb.buttons[0][0].text, "🎯 Цели",
+            "First button text should match including emoji"
+        );
+        assert_eq!(
+            kb.buttons[0][0].callback_data.as_deref(),
+            Some("goals_list"),
+            "First button callback_data should match"
+        );
+
+        // First row, second button
+        assert_eq!(
+            kb.buttons[0][1].text, "📋 Рутины",
+            "Second button text should match including emoji"
+        );
+        assert_eq!(
+            kb.buttons[0][1].callback_data.as_deref(),
+            Some("routines_list"),
+            "Second button callback_data should match"
+        );
+
+        // Second row, first button
+        assert_eq!(
+            kb.buttons[1][0].text, "⚡ Энергия",
+            "Third button text should match including emoji"
+        );
+        assert_eq!(
+            kb.buttons[1][0].callback_data.as_deref(),
+            Some("energy_log"),
+            "Third button callback_data should match"
+        );
+
+        // Step 5: Verify the clean text only contains the message without the keyboard block
+        assert_eq!(
+            clean_text, "Вот демо с кнопками:",
+            "Clean text should only contain the message without [INLINE_KEYBOARD] block"
+        );
+
+        // Additional verification: buttons should not have URL or web_app fields
+        assert!(
+            kb.buttons[0][0].url.is_none(),
+            "Callback button should not have URL"
+        );
+        assert!(
+            kb.buttons[0][0].web_app.is_none(),
+            "Callback button should not have web_app"
+        );
+    }
 }
