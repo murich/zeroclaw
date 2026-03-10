@@ -182,7 +182,7 @@ impl PromptSection for ButtonsSection {
     fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
         Ok(r#"## Interactive Buttons (Telegram)
 
-You can send interactive inline keyboard buttons using Telegram's official Bot API format:
+IMPORTANT: When presenting choices or options to users in Telegram, USE interactive buttons by including this syntax IN YOUR ACTUAL RESPONSE:
 
 [INLINE_KEYBOARD]
 [
@@ -191,54 +191,60 @@ You can send interactive inline keyboard buttons using Telegram's official Bot A
 ]
 [/INLINE_KEYBOARD]
 
-This is the standard Telegram Bot API format (https://core.telegram.org/bots/api#inlinekeyboardbutton).
+This creates REAL clickable buttons in Telegram (standard Telegram Bot API format).
 
-Supported button types:
-- callback_data: User clicks button, you receive callback data
-- url: Opens a URL when clicked
+**When to use buttons:**
+- Presenting choices (Yes/No, Select option A/B/C)
+- Action menus (View/Edit/Delete)
+- Navigation (Next/Previous/Back)
+- Quick replies (Agree/Disagree/More info)
+
+**DO NOT just describe buttons - actually include the [INLINE_KEYBOARD] syntax in your response!**
+
+Button types:
+- callback_data: User clicks, you receive the data back
+- url: Opens a link
 - web_app: Opens a Web App
 
-Examples:
+**Example 1 - Confirmation:**
+Would you like to continue?
 
-1. Callback buttons (receive data when clicked):
 [INLINE_KEYBOARD]
 [
-  [{"text": "✅ Approve", "callback_data": "approve_action"}],
-  [{"text": "❌ Reject", "callback_data": "reject_action"}]
+  [{"text": "✅ Yes", "callback_data": "confirm_yes"}, {"text": "❌ No", "callback_data": "confirm_no"}]
 ]
 [/INLINE_KEYBOARD]
 
-2. Multiple buttons per row:
+**Example 2 - Menu:**
+Choose an action:
+
 [INLINE_KEYBOARD]
 [
-  [{"text": "Yes", "callback_data": "yes"}, {"text": "No", "callback_data": "no"}],
-  [{"text": "Cancel", "callback_data": "cancel"}]
+  [{"text": "📊 View Stats", "callback_data": "stats_view"}],
+  [{"text": "⚙️ Settings", "callback_data": "settings_open"}],
+  [{"text": "ℹ️ Help", "callback_data": "help_show"}]
 ]
 [/INLINE_KEYBOARD]
 
-3. URL buttons:
+**Example 3 - Mixed (callbacks + URL):**
+Options:
+
 [INLINE_KEYBOARD]
 [
-  [{"text": "Visit Website", "url": "https://example.com"}],
-  [{"text": "More Info", "callback_data": "info"}]
+  [{"text": "📝 Submit", "callback_data": "form_submit"}],
+  [{"text": "🔗 More Info", "url": "https://example.com"}]
 ]
 [/INLINE_KEYBOARD]
 
 Rules:
-- Place [INLINE_KEYBOARD]...[/INLINE_KEYBOARD] anywhere in your message
-- JSON structure: array of rows, each row is array of button objects
-- callback_data limited to 64 characters (automatically truncated)
-- Invalid JSON falls back to showing text as-is
-- Buttons appear only in Telegram channel
+- JSON structure: [[{"text": "Label", "callback_data": "data"}]]
+- Each inner array is a button row
+- callback_data max 64 chars (auto-truncated)
+- Place anywhere in your response text
 
-Legacy format (deprecated but still supported):
-[BUTTONS]
-Button Text -> callback_data
----
-Second Row -> second_row
-[/BUTTONS]
+When user clicks a button, you receive: "🔘 Button clicked: {callback_data}"
 
-When a user clicks a button, you'll receive: "🔘 Button clicked: {callback_data}""#
+Legacy format (deprecated): [BUTTONS]Text -> data[/BUTTONS]"#
             .into())
     }
 }
