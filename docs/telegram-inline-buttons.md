@@ -18,7 +18,29 @@ Key capabilities:
 
 ## 2. Syntax Overview
 
-The AI assistant can include inline buttons in Telegram messages using the `[BUTTONS]...[/BUTTONS]` syntax:
+### Recommended: Native Telegram JSON Format
+
+The AI assistant can include inline buttons using the **standard Telegram Bot API format**:
+
+```
+[INLINE_KEYBOARD]
+[
+  [{"text": "Button 1", "callback_data": "callback_1"}],
+  [{"text": "Button 2", "callback_data": "callback_2"}],
+  [{"text": "Open Link", "url": "https://example.com"}]
+]
+[/INLINE_KEYBOARD]
+```
+
+This is the **recommended format** because:
+- It's the official Telegram Bot API structure
+- AI models already know this format
+- Supports all button types (callbacks, URLs, web apps)
+- More flexible and future-proof
+
+### Legacy: Custom Syntax (Deprecated)
+
+The older custom syntax is still supported for backward compatibility:
 
 ```
 [BUTTONS]
@@ -29,19 +51,44 @@ Second Row Button -> second_row
 [/BUTTONS]
 ```
 
-### Syntax Rules
+### JSON Format Rules
+
+- Place `[INLINE_KEYBOARD]...[/INLINE_KEYBOARD]` anywhere in your message text
+- Use standard Telegram `InlineKeyboardMarkup` JSON structure
+- **Structure**: 2D array where each inner array represents a button row
+- **Button types**:
+  - Callback: `{"text": "Label", "callback_data": "data"}`
+  - URL: `{"text": "Label", "url": "https://..."}`
+  - Web App: `{"text": "Label", "web_app": {"url": "https://..."}}`
+- Callback data is limited to 64 characters (automatically truncated)
+- The button block is stripped from the message text before sending
+- Invalid JSON gracefully falls back to showing the text as-is
+
+### Legacy Syntax Rules (Deprecated)
 
 - Place `[BUTTONS]...[/BUTTONS]` anywhere in your message text
 - Each button line format: `Display Text -> callback_data` or `Display Text | callback_data`
 - Use `---` or `ROW` on a separate line to start a new row
 - Maximum 3 buttons per row (additional buttons automatically wrap to a new row)
 - Callback data is limited to 64 characters (Telegram API constraint)
-- Buttons appear only when sending messages through the Telegram channel
-- The button block is stripped from the message text before sending
 
 ## 3. Basic Examples
 
-### Example 1: Yes/No Confirmation
+### Example 1: Yes/No Confirmation (JSON Format)
+
+```
+Would you like to proceed with this action?
+
+[INLINE_KEYBOARD]
+[
+  [{"text": "✅ Yes", "callback_data": "confirm_action"}, {"text": "❌ No", "callback_data": "cancel_action"}]
+]
+[/INLINE_KEYBOARD]
+```
+
+Result: Two buttons side-by-side in a single row.
+
+### Example 1b: Yes/No Confirmation (Legacy Format)
 
 ```
 Would you like to proceed with this action?
